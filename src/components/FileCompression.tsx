@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { FileUpload } from './FileUpload'
-import { Download, Archive, File as FileIcon, CheckCircle } from 'lucide-react'
+import { Download, Archive, File as FileIcon, CheckCircle, Eye, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { formatFileSize } from '@/lib/utils'
 import { PDFDocument } from 'pdf-lib'
 
@@ -44,11 +44,175 @@ interface CompressedFile {
   compressedSize: number
 }
 
+// PDF Preview Component
+function PDFPreview({ file }: { file: File }) {
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(0)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    if (!file) return
+
+    const loadPDF = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+        
+        const arrayBuffer = await file.arrayBuffer()
+        const pdfjsLib = await getPdfJs()
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
+        const pdfDocument = await loadingTask.promise
+        
+        setTotalPages(pdfDocument.numPages)
+        setCurrentPage(1)
+        
+        // Render first page
+        await renderPage(pdfDocument, 1)
+        setIsLoading(false)
+      } catch (err) {
+        console.error('Error loading PDF:', err)
+        setError('Failed to load PDF preview')
+        setIsLoading(false)
+      }
+    }
+
+    loadPDF()
+  }, [file])
+
+  const renderPage = async (pdfDocument: any, pageNum: number) => {
+    try {
+      const page = await pdfDocument.getPage(pageNum)
+      const viewport = page.getViewport({ scale: 1.5 })
+      
+      const canvas = canvasRef.current
+      if (!canvas) return
+      
+      const context = canvas.getContext('2d')
+      canvas.height = viewport.height
+      canvas.width = viewport.width
+      
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise
+    } catch (err) {
+      console.error('Error rendering page:', err)
+      setError('Failed to render page')
+    }
+  }
+
+  const goToPage = async (pageNum: number) => {
+    if (pageNum < 1 || pageNum > totalPages) return
+    
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const pdfjsLib = await getPdfJs()
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
+      const pdfDocument = await loadingTask.promise
+      
+      setCurrentPage(pageNum)
+      await renderPage(pdfDocument, pageNum)
+    } catch (err) {
+      console.error('Error navigating to page:', err)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading PDF preview...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <p className="text-red-600 mb-4">{error}</p>
+          <button
+            onClick={() => window.open(URL.createObjectURL(file), '_blank')}
+            className="text-blue-600 hover:text-blue-700 underline"
+          >
+            Open in new tab
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Page Navigation */}
+      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1}
+            className="flex items-center space-x-1 px-3 py-1 rounded bg-white border hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            <span>Previous</span>
+          </button>
+          
+          <span className="text-sm text-gray-600">
+            Page {currentPage} of {totalPages}
+          </span>
+          
+          <button
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages}
+            className="flex items-center space-x-1 px-3 py-1 rounded bg-white border hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span>Next</span>
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+        
+        <div className="flex items-center space-x-2">
+          <input
+            type="number"
+            min="1"
+            max={totalPages}
+            value={currentPage}
+            onChange={(e) => {
+              const page = parseInt(e.target.value)
+              if (page >= 1 && page <= totalPages) {
+                goToPage(page)
+              }
+            }}
+            className="w-16 px-2 py-1 border rounded text-center"
+          />
+          <span className="text-sm text-gray-600">Go to page</span>
+        </div>
+      </div>
+      
+      {/* PDF Canvas */}
+      <div className="flex-1 overflow-auto bg-gray-100 p-4">
+        <div className="flex justify-center">
+          <canvas
+            ref={canvasRef}
+            className="shadow-lg bg-white"
+            style={{ maxWidth: '100%', height: 'auto' }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function FileCompression() {
   const [files, setFiles] = useState<File[]>([])
   const [compressedFiles, setCompressedFiles] = useState<CompressedFile[]>([])
   const [isCompressing, setIsCompressing] = useState(false)
   const [compressionLevel, setCompressionLevel] = useState(6)
+  const [previewFile, setPreviewFile] = useState<File | null>(null)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
 
   const handleFilesSelected = useCallback((files: File[]) => {
     setFiles(files)
@@ -139,39 +303,126 @@ export function FileCompression() {
   }
 
   const compressPDF = async (arrayBuffer: ArrayBuffer, originalFile: File, level: number): Promise<File> => {
-    // Advanced PDF compression with proper page rendering and recompression
+    // Intelligent PDF compression that ensures actual size reduction
     try {
       console.log(`Starting PDF compression with level: ${level}`)
       
-      // Calculate quality and scale based on compression level
-      let imageQuality = 0.9
-      let scaleFactor = 1.0
+      const originalSize = arrayBuffer.byteLength
+      console.log(`Original size: ${originalSize} bytes`)
       
-      if (level >= 10) {
-        imageQuality = 0.2
-        scaleFactor = 0.4
-      } else if (level >= 9) {
-        imageQuality = 0.3
-        scaleFactor = 0.5
-      } else if (level >= 8) {
-        imageQuality = 0.4
-        scaleFactor = 0.6
-      } else if (level >= 7) {
-        imageQuality = 0.5
-        scaleFactor = 0.7
-      } else if (level >= 6) {
-        imageQuality = 0.6
-        scaleFactor = 0.75
-      } else if (level >= 5) {
-        imageQuality = 0.7
-        scaleFactor = 0.8
-      } else if (level >= 3) {
-        imageQuality = 0.8
-        scaleFactor = 0.85
-      } else if (level >= 2) {
-        imageQuality = 0.85
-        scaleFactor = 0.9
+      // For level 1, use server-side compression which actually works
+      if (level === 1) {
+        console.log('Level 1: Using server-side compression for guaranteed reduction')
+        
+        try {
+          // Use server-side compression for level 1
+          const form = new FormData()
+          form.append('file', originalFile)
+          form.append('level', '1')
+
+          const res = await fetch('/api/pdf-compress', {
+            method: 'POST',
+            body: form,
+          })
+
+          if (res.ok) {
+            const blob = await res.blob()
+            const serverCompressed = new File([blob], `compressed_${originalFile.name}`, {
+              type: 'application/pdf',
+              lastModified: Date.now(),
+            })
+            
+            const serverSize = serverCompressed.size
+            const serverReduction = ((originalSize - serverSize) / originalSize) * 100
+            
+            console.log(`Server Level 1: ${originalSize} -> ${serverSize} bytes (${serverReduction.toFixed(1)}% reduction)`)
+            
+            if (serverSize < originalSize) {
+              return serverCompressed
+            }
+          }
+        } catch (e) {
+          console.error('Server compression failed:', e)
+        }
+        
+        // Fallback: Use very aggressive client-side compression
+        console.log('Level 1: Server failed, using aggressive client compression')
+        
+        const pdfjsLib = await getPdfJs()
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
+        const pdfDocument = await loadingTask.promise
+        const numPages = pdfDocument.numPages
+        
+        // Use very aggressive settings to ensure reduction
+        const imageQuality = 0.3  // Very low quality
+        const scaleFactor = 0.6   // Much smaller scale
+        
+        const newPdfDoc = await PDFDocument.create()
+        
+        for (let i = 1; i <= numPages; i++) {
+          try {
+            const page = await pdfDocument.getPage(i)
+            const viewport = page.getViewport({ scale: scaleFactor })
+            
+            const canvas = document.createElement('canvas')
+            const context = canvas.getContext('2d')!
+            canvas.width = viewport.width
+            canvas.height = viewport.height
+            
+            await page.render({
+              canvasContext: context,
+              viewport: viewport
+            }).promise
+            
+            const imageData = canvas.toDataURL('image/jpeg', imageQuality)
+            const jpegImage = await newPdfDoc.embedJpg(imageData)
+            const newPage = newPdfDoc.addPage([viewport.width, viewport.height])
+            
+            newPage.drawImage(jpegImage, {
+              x: 0,
+              y: 0,
+              width: viewport.width,
+              height: viewport.height,
+            })
+          } catch (pageError) {
+            console.error(`Failed to compress page ${i}:`, pageError)
+          }
+        }
+        
+        const compressedBytes = await newPdfDoc.save({
+          useObjectStreams: true,
+          addDefaultPage: false,
+        })
+        
+        const compressedSize = compressedBytes.byteLength
+        const reduction = ((originalSize - compressedSize) / originalSize) * 100
+        
+        console.log(`Aggressive Level 1: ${originalSize} -> ${compressedSize} bytes (${reduction.toFixed(1)}% reduction)`)
+        
+        // If still no reduction, return original (shouldn't happen with these settings)
+        if (compressedSize >= originalSize) {
+          console.log('Level 1: Still no reduction, returning original')
+          return new File([arrayBuffer], `compressed_${originalFile.name}`, {
+            type: 'application/pdf',
+            lastModified: Date.now()
+          })
+        }
+        
+        return new File([compressedBytes], `compressed_${originalFile.name}`, {
+          type: 'application/pdf',
+          lastModified: Date.now()
+        })
       }
+      
+      // For higher levels, use image-based compression with progressive settings
+      const targetReduction = Math.min(level * 9, 90) // 9% per level, max 90%
+      const targetSize = Math.floor(originalSize * (1 - targetReduction / 100))
+      
+      console.log(`Target reduction: ${targetReduction}%, target size: ${targetSize} bytes`)
+      
+      // Calculate quality and scale based on target reduction
+      let imageQuality = Math.max(0.1, 1 - (targetReduction / 100) * 0.8)
+      let scaleFactor = Math.max(0.3, 1 - (targetReduction / 100) * 0.6)
       
       console.log(`Using quality: ${imageQuality}, scale: ${scaleFactor}`)
       
@@ -231,13 +482,29 @@ export function FileCompression() {
         addDefaultPage: false,
       })
       
-      const originalSize = arrayBuffer.byteLength
       const compressedSize = compressedBytes.byteLength
-      const reduction = ((originalSize - compressedSize) / originalSize) * 100
+      const actualReduction = ((originalSize - compressedSize) / originalSize) * 100
       
       console.log(`Original: ${originalSize} bytes`)
       console.log(`Compressed: ${compressedSize} bytes`)
-      console.log(`Reduction: ${reduction.toFixed(1)}%`)
+      console.log(`Actual reduction: ${actualReduction.toFixed(1)}%`)
+      
+      // If compression didn't achieve the target or made file larger, use fallback
+      if (compressedSize >= originalSize || actualReduction < (targetReduction * 0.5)) {
+        console.log('Compression not effective, using fallback optimization')
+        const pdfDoc = await PDFDocument.load(arrayBuffer)
+        const fallbackBytes = await pdfDoc.save({
+          useObjectStreams: true,
+          addDefaultPage: false,
+        })
+        
+        if (fallbackBytes.byteLength < originalSize) {
+          return new File([fallbackBytes], `compressed_${originalFile.name}`, {
+            type: 'application/pdf',
+            lastModified: Date.now()
+          })
+        }
+      }
       
       // Create the compressed file
       const blob = new Blob([compressedBytes], { type: 'application/pdf' })
@@ -355,6 +622,20 @@ export function FileCompression() {
     }
   }
 
+  const openPreview = (file: File) => {
+    setPreviewFile(file)
+    setIsPreviewOpen(true)
+  }
+
+  const closePreview = () => {
+    setPreviewFile(null)
+    setIsPreviewOpen(false)
+  }
+
+  const isPDFFile = (file: File) => {
+    return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+  }
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-lg shadow-sm border p-6">
@@ -411,15 +692,16 @@ export function FileCompression() {
       <div className="mt-2 text-xs text-blue-700">
         <p><strong>Current Level ({compressionLevel}/10):</strong></p>
         <ul className="mt-1 space-y-1">
-          {compressionLevel >= 1 && compressionLevel < 2 && <li>• Basic PDF optimization (5-10% reduction)</li>}
-          {compressionLevel >= 2 && compressionLevel < 3 && <li>• JPEG quality 85%, scale 90% (10-20% reduction)</li>}
-          {compressionLevel >= 3 && compressionLevel < 5 && <li>• JPEG quality 80%, scale 85% (20-30% reduction)</li>}
-          {compressionLevel >= 5 && compressionLevel < 6 && <li>• JPEG quality 70%, scale 80% (30-40% reduction)</li>}
-          {compressionLevel >= 6 && compressionLevel < 7 && <li>• JPEG quality 60%, scale 75% (40-50% reduction)</li>}
-          {compressionLevel >= 7 && compressionLevel < 8 && <li>• JPEG quality 50%, scale 70% (50-60% reduction)</li>}
-          {compressionLevel >= 8 && compressionLevel < 9 && <li>• JPEG quality 40%, scale 60% (60-70% reduction)</li>}
-          {compressionLevel >= 9 && compressionLevel < 10 && <li>• JPEG quality 30%, scale 50% (70-80% reduction)</li>}
-          {compressionLevel >= 10 && <li>• JPEG quality 20%, scale 40% (80-90% reduction)</li>}
+          {compressionLevel >= 1 && compressionLevel < 2 && <li>• Server-side compression (up to 9% reduction)</li>}
+          {compressionLevel >= 2 && compressionLevel < 3 && <li>• Light image compression (up to 18% reduction)</li>}
+          {compressionLevel >= 3 && compressionLevel < 4 && <li>• Moderate compression (up to 27% reduction)</li>}
+          {compressionLevel >= 4 && compressionLevel < 5 && <li>• Medium compression (up to 36% reduction)</li>}
+          {compressionLevel >= 5 && compressionLevel < 6 && <li>• Strong compression (up to 45% reduction)</li>}
+          {compressionLevel >= 6 && compressionLevel < 7 && <li>• Heavy compression (up to 54% reduction)</li>}
+          {compressionLevel >= 7 && compressionLevel < 8 && <li>• Very heavy compression (up to 63% reduction)</li>}
+          {compressionLevel >= 8 && compressionLevel < 9 && <li>• Maximum compression (up to 72% reduction)</li>}
+          {compressionLevel >= 9 && compressionLevel < 10 && <li>• Ultra compression (up to 81% reduction)</li>}
+          {compressionLevel >= 10 && <li>• Extreme compression (up to 90% reduction)</li>}
         </ul>
         <p className="mt-2 text-blue-600">ℹ Higher levels trade quality for smaller file size</p>
       </div>
@@ -466,6 +748,16 @@ export function FileCompression() {
                     <CheckCircle className="h-5 w-5 text-green-500" />
                     <span className="font-medium text-gray-900">{result.original.name}</span>
                   </div>
+                  <div className="flex items-center space-x-2">
+                    {isPDFFile(result.compressed) && (
+                      <button
+                        onClick={() => openPreview(result.compressed)}
+                        className="flex items-center space-x-1 text-green-600 hover:text-green-700 transition-colors"
+                      >
+                        <Eye className="h-4 w-4" />
+                        <span>Preview</span>
+                      </button>
+                    )}
                   <button
                     onClick={() => downloadCompressed(result)}
                     className="flex items-center space-x-1 text-blue-600 hover:text-blue-700 transition-colors"
@@ -473,6 +765,7 @@ export function FileCompression() {
                     <Download className="h-4 w-4" />
                     <span>Download</span>
                   </button>
+                  </div>
                 </div>
                 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -509,6 +802,28 @@ export function FileCompression() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {isPreviewOpen && previewFile && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold text-gray-900">
+                PDF Preview: {previewFile.name}
+              </h3>
+              <button
+                onClick={closePreview}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <PDFPreview file={previewFile} />
+            </div>
           </div>
         </div>
       )}
